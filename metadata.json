@@ -1,0 +1,6 @@
+{
+  "name": "SGSS Donation Dashboard",
+  "description": "Support SGSS - empowering free and open games, books, audiobooks, and digital tools through community donations via Paystack.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
