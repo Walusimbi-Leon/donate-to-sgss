@@ -1,8 +1,8 @@
 /**
  * Paystack Integration Service for SGSS Donations
  * Configured with SGSS Paystack Public Key and Monthly Subscription Plans
+ * Upgraded to Paystack InlineJS v2 for seamless 3D Secure (OTP) authentication
  */
-
 import { PAYSTACK_MONTHLY_PLANS } from '../config/plans';
 
 export const PAYSTACK_PUBLIC_KEY = 'pk_live_40927e91c9c5f15bdd837752f55c3b0695db2737';
@@ -10,25 +10,28 @@ export const PAYSTACK_PUBLIC_KEY = 'pk_live_40927e91c9c5f15bdd837752f55c3b0695db
 declare global {
   interface Window {
     PaystackPop?: {
-      setup: (options: {
-        key: string;
-        email: string;
-        amount: number; // in subunits (cents for USD)
-        currency?: string;
-        plan?: string;  // Paystack Subscription Plan code for recurring monthly charges
-        ref?: string;
-        metadata?: {
-          custom_fields: Array<{
-            display_name: string;
-            variable_name: string;
-            value: string;
-          }>;
-        };
-        callback: (response: { reference: string; status?: string; trans?: string; message?: string }) => void;
-        onClose: () => void;
-      }) => {
-        openIframe: () => void;
+      new (): {
+        newTransaction: (options: {
+          key: string;
+          email: string;
+          amount: number; // in subunits (cents for USD)
+          currency?: string;
+          plan?: string;
+          ref?: string;
+          metadata?: {
+            custom_fields: Array<{
+              display_name: string;
+              variable_name: string;
+              value: string;
+            }>;
+          };
+          onSuccess?: (response: { reference: string; status?: string; trans?: string; message?: string }) => void;
+          onCancel?: () => void;
+          onError?: (error: { message: string }) => void;
+          onClose?: () => void;
+        }) => void;
       };
+      setup?: (options: unknown) => { openIframe: () => void };
     };
   }
 }
@@ -58,7 +61,7 @@ export function loadPaystackScript(): Promise<boolean> {
     }
 
     const script = document.createElement('script');
-    script.src = 'https://js.paystack.co/v1/inline.js';
+    script.src = 'https://js.paystack.co/v2/inline.js';
     script.async = true;
     script.onload = () => resolve(true);
     script.onerror = () => resolve(false);
@@ -68,7 +71,6 @@ export function loadPaystackScript(): Promise<boolean> {
 
 export async function processPaystackDonation(params: PaymentParams): Promise<void> {
   const isScriptLoaded = await loadPaystackScript();
-
   if (!isScriptLoaded || !window.PaystackPop) {
     if (params.onError) {
       params.onError('Paystack inline SDK could not be loaded. Please check your network connection.');
@@ -87,12 +89,14 @@ export async function processPaystackDonation(params: PaymentParams): Promise<vo
       : undefined;
 
   try {
-    const setupOptions: Parameters<NonNullable<Window['PaystackPop']>['setup']>[0] = {
+    const popup = new window.PaystackPop();
+    popup.newTransaction({
       key: PAYSTACK_PUBLIC_KEY,
       email: params.email,
       amount: amountInCents,
       currency: 'USD',
       ref: ref,
+      ...(planCode ? { plan: planCode } : {}),
       metadata: {
         custom_fields: [
           {
@@ -112,25 +116,46 @@ export async function processPaystackDonation(params: PaymentParams): Promise<vo
           },
         ],
       },
-      callback: (response) => {
-        params.onSuccess(response.reference || ref);
+      onSuccess: (response) => {
+        params.onSuccess(response?.reference || ref);
       },
-      onClose: () => {
+      onCancel: () => {
         if (params.onClose) {
           params.onClose();
         }
       },
-    };
-
-    // If a monthly plan code is configured, attach it to trigger automatic recurring billing
-    if (planCode) {
-      setupOptions.plan = planCode;
-    }
-
-    const handler = window.PaystackPop.setup(setupOptions);
-    handler.openIframe();
+      onError: (err) => {
+        console.error('Paystack transaction error:', err);
+        if (params.onError) {
+          params.onError(err?.message || 'Payment authentication failed');
+        }
+      },
+    });
   } catch (err: unknown) {
     console.error('Paystack initialization error:', err);
+    // Graceful fallback to legacy setup if v2 constructor fails in an older environment
+    if (typeof window.PaystackPop.setup === 'function') {
+      try {
+        const handler = window.PaystackPop.setup({
+          key: PAYSTACK_PUBLIC_KEY,
+          email: params.email,
+          amount: amountInCents,
+          currency: 'USD',
+          ref: ref,
+          ...(planCode ? { plan: planCode } : {}),
+          callback: (response: { reference?: string }) => {
+            params.onSuccess(response?.reference || ref);
+          },
+          onClose: () => {
+            if (params.onClose) params.onClose();
+          },
+        });
+        handler.openIframe();
+        return;
+      } catch (fallbackErr) {
+        console.error('Fallback error:', fallbackErr);
+      }
+    }
     if (params.onError) {
       const message = err instanceof Error ? err.message : 'Failed to launch Paystack checkout';
       params.onError(message);

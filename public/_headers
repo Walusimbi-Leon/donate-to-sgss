@@ -1,0 +1,4 @@
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: payment=(self "https://checkout.paystack.com" "https://standard.paystack.co" "https://js.paystack.co")
